@@ -1,0 +1,7 @@
+{
+  "main": "src/index.js",
+  "name": "facet-index",
+  "devDependencies": {
+    "bun-types": "^0.5.0"
+  }
+}
