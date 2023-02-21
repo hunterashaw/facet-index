@@ -93,11 +93,11 @@ const parameters = {
 }
 
 const facetSets = [
-    ['material:wood', 'name:hat'],
+    ['material:wood'],
     ['material:steel'],
-    ['material:wood', 'name:tv'],
-    ['color:black', 'material:wood'],
-    ['name:fast', 'color:red'],
+    ['material:wood'],
+    ['color:black'],
+    ['name:fast'],
     ['name:oval'],
     ['color:toupe']
 ]

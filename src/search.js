@@ -178,12 +178,14 @@ export default class FacetedSearch {
         // Filtered results
         else {
             const facets = this.getBuffer(
-                parameters.facets.map(name => {
-                    const id = this.getFacetID(name, true)
-                    if (id === undefined)
-                        throw new Error(`Facet "${name}" not found.`)
-                    return id
-                }).sort((a, b) => a - b)
+                parameters.facets
+                    .map(name => {
+                        const id = this.getFacetID(name, true)
+                        if (id === undefined)
+                            throw new Error(`Facet "${name}" not found.`)
+                        return id
+                    })
+                    .sort((a, b) => a - b)
             )
             results = parameters?.desc
                 ? this.queries.search.filtered.desc
@@ -221,14 +223,23 @@ export default class FacetedSearch {
     }
 
     /**
-     * Returns possible facet queries with document counts (expensive, use cache)
+     * Build aggregation cache - run after indexing new documents - will take 30+ seconds on large indexes
+     */
+    buildAggregations() {
+        this.queries.facets.aggregations.build.run()
+        this.queries.scalars.aggregations.build.run()
+        this.queries.scalars.aggregations.buildUnfiltered.run()
+    }
+
+    /**
+     * Returns possible facet queries with document counts
      * @param {string[]} facets
-     * @returns {Record<string, number | Record<string, number>>}
+     * @returns {{facets: Record<string, number | Record<string, number>>, scalars: {name: string, min: number, max: number, average: number}[]}}
      */
     getAggregations(facets = []) {
         const facetLookup = new Lookup(this.queries.facets.all.values())
-        const scalarLookup = new Lookup(this.queries.scalars.all.values())
         const aggregations = {}
+
         const setAggregation = (key, value, count) => {
             // Boolean facet
             if (value === undefined) return (aggregations[key] = count)
@@ -237,42 +248,37 @@ export default class FacetedSearch {
             aggregations[key][value] = count
         }
 
-        // Get root-level aggregations
-        if (facets.length === 0) {
-            facetLookup.getNames().forEach(name => {
-                const [key, value] = name.split(':')
-                const { count } = this.queries.facets.count.get(
-                    this.getBuffer([facetLookup.getID(name)])
-                )
-                setAggregation(key, value, count)
-            })
-        }
-        // Get permutations that match next possible query size
-        else {
-            const possiblePermutations = this.queries.facets.countByLength.values(
+        const possiblePermutations =
+            this.queries.facets.aggregations.getByLength.values(
                 (facets.length + 1) * 2
             )
-            const required = facets.map(name => {
-                const id = facetLookup.getID(name)
-                if (id === undefined) throw new Error(`Facet "${name}" not found.`)
-                return id
-            })
-    
-            possiblePermutations.forEach(([{ buffer }, count]) => {
-                const permutationIDs = new Uint16Array(buffer)
-    
-                // Doesn't contain current requirements
-                if (!required.every(id => permutationIDs.includes(id))) return
-    
-                // Map next possible facet to aggregations
-                const nextFacetID = permutationIDs.find(
-                    id => !required.includes(id)
-                )
-                const [key, value] = facetLookup.getName(nextFacetID).split(':')
-                setAggregation(key, value, count)
-            })
-        }
+        const required = facets.map(name => {
+            const id = facetLookup.getID(name)
+            if (id === undefined) throw new Error(`Facet "${name}" not found.`)
+            return id
+        })
 
-        return aggregations
+        possiblePermutations.forEach(([{ buffer }, count]) => {
+            const permutationIDs = new Uint16Array(buffer)
+
+            // Doesn't contain current requirements
+            if (!required.every(id => permutationIDs.includes(id))) return
+
+            // Map next possible facet to aggregations
+            const nextFacetID = permutationIDs.find(
+                id => !required.includes(id)
+            )
+            const [key, value] = facetLookup.getName(nextFacetID).split(':')
+            setAggregation(key, value, count)
+        })
+
+        return {
+            facets: aggregations,
+            scalars: required.length
+                ? this.queries.scalars.aggregations.getByFacets.all(
+                      this.getBuffer(required.sort((a, b) => a - b))
+                  )
+                : this.queries.scalars.aggregations.getUnfiltered.all()
+        }
     }
 }
