@@ -7,6 +7,8 @@ export default function getQueries(db) {
         schema: {
             drops: [
                 'drop table if exists facets',
+                'drop table if exists facet_aggregations',
+                'drop table if exists facet_aggregation_scalars',
                 'drop table if exists scalars',
                 'drop table if exists documents',
                 'drop table if exists document_facets',
@@ -88,8 +90,9 @@ export default function getQueries(db) {
                 'insert into documents (value) values (?) returning rowid'
             ),
             get: db.prepare('select value from documents where rowid = ?'),
+            countOne: db.prepare('select count(rowid) as count from documents where rowid = ?'),
             update: db.prepare(
-                'update documents set value = ? where rowid = ?'
+                'update documents set value = ? where rowid = ? returning rowid'
             ),
             facets: {
                 clear: db.prepare(

@@ -15,7 +15,4 @@ A lightweight but powerful faceted-search tool (like those used in eCommerce) th
 
 ## WIP
 Left to finish:
- - Update existing on index (refactor from createDocument)
  - Sort after
- - Don't split facets on space
- - Sort options on aggregations?

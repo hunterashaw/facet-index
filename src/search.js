@@ -83,23 +83,36 @@ export default class FacetedSearch {
      * @returns {Buffer}
      */
     getBuffer(ids) {
-        return Buffer.from(new Uint16Array(ids).buffer)
+        return Buffer.from(new Uint16Array(ids.sort((a, b) => a - b)).buffer)
     }
 
     /**
-     * Index a new document
-     * @param {Record<string, boolean | number | string>} document
+     * Index a new or existing document
+     * @param {Record<string, boolean | number | string | any>} document
      * @returns {number} Document ID
      */
-    createDocument(document) {
+    index(document) {
         const {
             create,
-            scalars: { create: createScalar },
-            facets: { create: createFacet }
+            update,
+            scalars: { create: createScalar, clear: clearScalars },
+            facets: { create: createFacet, clear: clearFacets }
         } = this.queries.document
 
-        const document_id = create.get(JSON.stringify(document)).rowid
-        createScalar.run(document_id, 'updated', Date.now() / 1000)
+        if (document.id) {
+            if (typeof document.id !== 'number')
+                throw new Error(`Document 'id' must be a number.`)
+            if (this.queries.document.countOne.get(document.id).count === 0)
+                throw new Error(`Document doesn't exist: ${document.id}.`)
+        }
+            
+
+        const value = JSON.stringify(document)
+        const { rowid: document_id } = document.id
+            ? update.get(document.id, value, value, document.id)
+            : create.get(value)
+        if (document.id) this.clearDocument(document_id)
+        createScalar.run(document_id, this.getScalarID('updated'), Date.now() / 1000)
 
         /** @type {number[]} */
         const facets = []
@@ -111,25 +124,27 @@ export default class FacetedSearch {
                     this.getScalarID(key.toLowerCase()),
                     value
                 )
-            // Multi-Value Facet
+            // Single-Value Facet
             if (typeof value === 'string')
-                return value
-                    .split(' ')
-                    .filter(value => Boolean(value.trim()))
-                    .forEach(value =>
-                        facets.push(
-                            this.getFacetID(
-                                `${key}:${value.trim()}`.toLowerCase()
-                            )
-                        )
+                facets.push(
+                    this.getFacetID(`${key}:${value.trim()}`.toLowerCase())
+                )
+            // Multi-Value Facet
+            if (
+                Array.isArray(value) &&
+                value.every(value => typeof value === 'string')
+            )
+                value.forEach(value =>
+                    facets.push(
+                        this.getFacetID(`${key}:${value.trim()}`.toLowerCase())
                     )
+                )
             // Boolean Facet
             if (typeof value === 'boolean')
                 return facets.push(this.getFacetID(key.toLowerCase()))
         })
 
         // Index facet permutations
-        facets.sort((a, b) => a - b)
         for (let i = 0; i < facets.length; i++) {
             createFacet.run(document_id, this.getBuffer([facets[i]]))
             for (let start = i + 1; start < facets.length; start++) {
@@ -185,7 +200,6 @@ export default class FacetedSearch {
                             throw new Error(`Facet "${name}" not found.`)
                         return id
                     })
-                    .sort((a, b) => a - b)
             )
             results = parameters?.desc
                 ? this.queries.search.filtered.desc
@@ -276,7 +290,7 @@ export default class FacetedSearch {
             facets: aggregations,
             scalars: required.length
                 ? this.queries.scalars.aggregations.getByFacets.all(
-                      this.getBuffer(required.sort((a, b) => a - b))
+                      this.getBuffer(required)
                   )
                 : this.queries.scalars.aggregations.getUnfiltered.all()
         }

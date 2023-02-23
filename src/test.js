@@ -7,6 +7,7 @@ const search = new FacetedSearch('store.db')
  * @param {number} count
  */
 function populate(count) {
+    search.clearSchema()
     console.log(`Indexing ${count} documents:`)
 
     const names = [
@@ -54,8 +55,8 @@ function populate(count) {
     const start = performance.now()
     for (let i = 0; i < count; i++) {
         if (i % 100 === 0) console.log(`${((i / count) * 100).toFixed(1)}%`)
-        search.createDocument({
-            name: random(names),
+        search.index({
+            name: random(names).split(' '),
             price: parseFloat((Math.random() * 1000).toFixed(2)),
             material: random(materials),
             color: random(colors)
@@ -67,6 +68,7 @@ function populate(count) {
         } seconds`
     )
 
+    search.buildAggregations()
     search.vacuum()
 }
 
@@ -103,8 +105,10 @@ const facetSets = [
 ]
 const random = array => array[Math.floor(Math.random() * array.length)]
 
-for (let i = 0; i < 10; i++) {
-    const facets = random(facetSets)
-    getAggregations({ ...parameters, facets })
-    getResults({ ...parameters, facets })
-}
+// for (let i = 0; i < 10; i++) {
+//     const facets = random(facetSets)
+//     getAggregations({ ...parameters, facets })
+//     getResults({ ...parameters, facets })
+// }
+
+populate(100000)
