@@ -1,27 +1,35 @@
 import { Database } from 'bun:sqlite'
 import Lookup from './lookup'
-import getQueries from './queries'
+import { schema, getQueries } from './queries'
 
 /**
  * SQLite-backed faceted-search
  */
-export default class FacetedSearch {
+export default class DocumentStore {
     /**
      * @param {string} filename
      */
     constructor(filename) {
+        // TODO: add configuration for term pointer size
         this.db = new Database(filename)
         this.db.run('pragma journal_mode = WAL')
-        this.queries = getQueries(this.db)
         this.runStatement = statement => this.db.run(statement)
         this.createSchema()
+        this.queries = getQueries(this.db)
+    }
+
+    /**
+     * Close DB connection
+     */
+    close() {
+        this.db.close()
     }
 
     /**
      * Create tables & indexes necessary for indexing documents
      */
     createSchema() {
-        const { tables, indexes } = this.queries.schema
+        const { tables, indexes } = schema
         tables.forEach(this.runStatement)
         indexes.forEach(this.runStatement)
     }
@@ -30,60 +38,86 @@ export default class FacetedSearch {
      * Drop & re-create schema - deletes all indexed data
      */
     clearSchema() {
-        this.queries.schema.drops.forEach(this.runStatement)
+        schema.drops.forEach(this.runStatement)
         this.createSchema()
     }
 
     /**
-     * Vacuum database
+     * Vacuum database - run periodically
      */
     vacuum() {
         this.queries.vacuum.run()
     }
 
     /**
-     * Delete existing facets & scalars for existing document
-     * @param {number} document_id
+     * Build aggregation cache - run after indexing new documents
      */
-    clearDocument(document_id) {
-        const {
-            facets: { clear: clearFacets },
-            scalars: { clear: clearScalars }
-        } = this.queries.document
-        clearFacets.run(document_id)
-        clearScalars.run(document_id)
+    buildAggregations() {
+        this.queries.aggregations.build.run()
     }
 
     /**
-     * Get or create scalar ID by name
+     * Get or create term ID by name
      * @param {string} name
-     * @returns {number} Scalar ID
+     * @param {boolean} readonly Throw error if term is not found
+     * @returns {number} Term ID
      */
-    getScalarID(name, readonly = false) {
-        const { get, create } = this.queries.scalars
-        return readonly
-            ? get.get(name)?.rowid
-            : get.get(name)?.rowid ?? create.get(name).rowid
+    getTermID(name, readonly = false) {
+        const { get, create } = this.queries.terms
+
+        if (!readonly) return get.get(name)?.rowid ?? create.get(name).rowid
+
+        const id = get.get(name)?.rowid
+        if (id === undefined) throw new Error(`Term '${name}' not found.`)
+        return id
     }
 
     /**
-     * Get or create facet ID by name
-     * @param {string} name
-     * @returns {number} Facet ID
-     */
-    getFacetID(name, readonly = false) {
-        const { get, create } = this.queries.facets
-        return readonly
-            ? get.get(name)?.rowid
-            : get.get(name)?.rowid ?? create.get(name).rowid
-    }
-
-    /**
-     * @param {number[]} ids
+     * @param {number[]} facet_ids
      * @returns {Buffer}
      */
-    getBuffer(ids) {
-        return Buffer.from(new Uint16Array(ids.sort((a, b) => a - b)).buffer)
+    getFacetBuffer(facet_ids) {
+        return Buffer.from(
+            new Uint16Array([...facet_ids.sort((a, b) => a - b)]).buffer
+        )
+    }
+
+    /**
+     * Get or create aggregaton ID by terms
+     * @param {number[]} facets
+     * @param {number} scalar
+     * @param {boolean} readonly Return undefined if not found
+     * @returns {number}
+     */
+    getAggregationID(facets, scalar, readonly = false) {
+        const { get, create } = this.queries.aggregations
+        const buffer = this.getFacetBuffer(facets)
+
+        if (!readonly)
+            return (
+                get.get(buffer, scalar)?.rowid ??
+                create.get(buffer, scalar).rowid
+            )
+        return get.get(buffer, scalar)?.rowid
+    }
+
+    /**
+     * Create or update document by id
+     * @param {object} document
+     * @param {number | undefined} document.id
+     * @returns {number}
+     */
+    upsertDocument(document) {
+        const { create, upsert } = this.queries.documents
+        const { clear } = this.queries.results
+        const id = document.id
+        const value = JSON.stringify(document)
+        if (id === undefined) return create.get(value).rowid
+
+        if (typeof id !== 'number')
+            throw new Error(`Document 'id' must be a number.`)
+        clear.run(id)
+        return upsert.run(id, value, value, id).rowid
     }
 
     /**
@@ -93,165 +127,130 @@ export default class FacetedSearch {
      */
     index(document) {
         const {
-            create,
-            update,
-            scalars: { create: createScalar, clear: clearScalars },
-            facets: { create: createFacet, clear: clearFacets }
-        } = this.queries.document
+            results: { create }
+        } = this.queries
 
-        if (document.id) {
-            if (typeof document.id !== 'number')
-                throw new Error(`Document 'id' must be a number.`)
-            if (this.queries.document.countOne.get(document.id).count === 0)
-                throw new Error(`Document doesn't exist: ${document.id}.`)
-        }
-            
+        const id = this.db.transaction(() => {
+            const id = this.upsertDocument(document)
+            if (document.id) delete document.id
 
-        const value = JSON.stringify(document)
-        const { rowid: document_id } = document.id
-            ? update.get(document.id, value, value, document.id)
-            : create.get(value)
-        if (document.id) this.clearDocument(document_id)
-        createScalar.run(document_id, this.getScalarID('updated'), Date.now() / 1000)
+            /** @type {Record<number, number>} */
+            const scalars = {}
+            scalars[this.getTermID('updated')] = parseInt(Date.now() / 1000)
+            /** @type {number[]} */
+            const facets = []
 
-        /** @type {number[]} */
-        const facets = []
-        Object.entries(document).forEach(([key, value]) => {
-            // Scalar
-            if (typeof value === 'number')
-                return createScalar.run(
-                    document_id,
-                    this.getScalarID(key.toLowerCase()),
-                    value
-                )
-            // Single-Value Facet
-            if (typeof value === 'string')
-                facets.push(
-                    this.getFacetID(`${key}:${value.trim()}`.toLowerCase())
-                )
-            // Multi-Value Facet
-            if (
-                Array.isArray(value) &&
-                value.every(value => typeof value === 'string')
-            )
-                value.forEach(value =>
-                    facets.push(
-                        this.getFacetID(`${key}:${value.trim()}`.toLowerCase())
+            // Find root-level document scalars (number) and facets (boolean, string, string[])
+            Object.entries(document).forEach(([key, value]) => {
+                if (typeof value === 'number')
+                    return (scalars[this.getTermID(key.toLowerCase())] = value)
+
+                if (typeof value === 'string')
+                    return facets.push(
+                        this.getTermID(`${key}:${value.trim()}`.toLowerCase())
                     )
-                )
-            // Boolean Facet
-            if (typeof value === 'boolean')
-                return facets.push(this.getFacetID(key.toLowerCase()))
-        })
 
-        // Index facet permutations
-        for (let i = 0; i < facets.length; i++) {
-            createFacet.run(document_id, this.getBuffer([facets[i]]))
-            for (let start = i + 1; start < facets.length; start++) {
-                for (let length = 1; length <= facets.length - start; length++)
-                    createFacet.run(
-                        document_id,
-                        this.getBuffer([
+                if (
+                    Array.isArray(value) &&
+                    value.every(value => typeof value === 'string')
+                )
+                    return value.forEach(value =>
+                        facets.push(
+                            this.getTermID(
+                                `${key}:${value.trim()}`.toLowerCase()
+                            )
+                        )
+                    )
+
+                if (typeof value === 'boolean')
+                    return facets.push(this.getTermID(key.toLowerCase()))
+            })
+
+            // Create 1 result per scalar
+            const indexScalars = (facets = []) =>
+                Object.entries(scalars).forEach(([scalar, value]) =>
+                    create.run(id, this.getAggregationID(facets, scalar), value)
+                )
+            indexScalars()
+            // Permutate all facets
+            for (let i = 0; i < facets.length; i++) {
+                indexScalars([facets[i]])
+                for (let start = i + 1; start < facets.length; start++) {
+                    for (
+                        let length = 1;
+                        length <= facets.length - start;
+                        length++
+                    )
+                        indexScalars([
                             facets[i],
                             ...facets.slice(start, start + length)
                         ])
-                    )
+                }
             }
-        }
+
+            return id
+        })()
+
+        return id
     }
 
     /**
      *
      * @param {object} parameters
-     * @param {string[] | undefined} parameters.facets Facets to filter results by (AND query) - default: []
      * @param {string | undefined} parameters.sort_by Scalar to sort results by - default: 'updated'
+     * @param {string[] | undefined} parameters.filters Facets to filter results by (AND query) - default: []
      * @param {boolean | undefined} parameters.desc Sort descending - default: false
-     * @param {number | undefined} parameters.size Results to return - default: 48
-     * @param {number | undefined} parameters.documents Results to return document values for - default: 12
-     * @param {number | undefined} parameters.offset Results to skip - default: 0
+     * @param {number | undefined} parameters.size Amount of results to return - default: 10
+     * @param {number | undefined} parameters.start Return results after sort_by
+     * @param {number | undefined} parameters.after Return results after document ID
+     * @returns {object[]}
      */
     getResults(parameters = {}) {
-        const sortID = this.getScalarID(parameters.sort_by ?? 'updated', true)
-        if (sortID === undefined)
-            throw new Error(
-                `Scalar "${parameters.sort_by ?? 'updated'}" not found.`
-            )
+        const { get, getAfter } = this.queries.results
+        const sort_by = this.getTermID(parameters.sort_by ?? 'updated', true)
+        const facets =
+            parameters?.filters.map(facet => this.getTermID(facet, true)) ?? []
+        const desc = parameters?.desc
+        const size = parameters?.size ?? 10
+        const after = parameters?.after
+        const start = parameters?.start
 
-        const size = parameters?.size ?? 48
-        const offset = parameters?.offset ?? 0
+        if (after !== undefined && start === undefined)
+            throw new Error(`'start' must be provided if 'after' is used.`)
+        if (start !== undefined && after === undefined)
+            throw new Error(`'after' must be provided if 'start' is used.`)
 
-        let results
-        // Un-filtered results
-        if (!parameters.facets?.length)
-            results = parameters?.desc
-                ? this.queries.search.unfiltered.desc
-                      .values(sortID, size, offset)
-                      ?.flat()
-                : this.queries.search.unfiltered.asc
-                      .values(sortID, size, offset)
-                      ?.flat()
-        // Filtered results
-        else {
-            const facets = this.getBuffer(
-                parameters.facets
-                    .map(name => {
-                        const id = this.getFacetID(name, true)
-                        if (id === undefined)
-                            throw new Error(`Facet "${name}" not found.`)
-                        return id
-                    })
-            )
-            results = parameters?.desc
-                ? this.queries.search.filtered.desc
-                      .values(sortID, facets, size, offset)
-                      ?.flat()
-                : this.queries.search.filtered.asc
-                      .values(sortID, facets, size, offset)
-                      ?.flat()
-        }
+        const aggregation = this.getAggregationID(facets, sort_by, true)
+        if (aggregation === undefined) return []
 
-        const documents = parameters?.documents ?? 12
-        for (let i = 0; i < documents && i < results?.length; i++) {
-            const id = results[i]
-            const { value } = this.queries.document.get.get(id)
-            results[i] = {
+        const getDocuments = values =>
+            values.map(([id]) => ({
                 id,
-                value: JSON.parse(value)
-            }
-        }
+                ...JSON.parse(this.queries.documents.get.get(id).value)
+            })) ?? []
 
-        return results ?? []
-    }
+        if (start !== undefined)
+            return desc
+                ? getDocuments(
+                      getAfter.desc.values(aggregation, start, after, size)
+                  )
+                : getDocuments(
+                      getAfter.asc.values(aggregation, start, after, size)
+                  )
 
-    /**
-     * @param {number[]} document_ids
-     */
-    getDocuments(document_ids) {
-        return document_ids.map(id => {
-            const { value } = this.queries.document.get.get(results[i])
-            return {
-                id,
-                value: JSON.parse(value)
-            }
-        })
-    }
-
-    /**
-     * Build aggregation cache - run after indexing new documents - will take 30+ seconds on large indexes
-     */
-    buildAggregations() {
-        this.queries.facets.aggregations.build.run()
-        this.queries.scalars.aggregations.build.run()
-        this.queries.scalars.aggregations.buildUnfiltered.run()
+        return desc
+            ? getDocuments(get.desc.values(aggregation, size))
+            : getDocuments(get.asc.values(aggregation, size))
     }
 
     /**
      * Returns possible facet queries with document counts
-     * @param {string[]} facets
+     * @param {string[]} filters
      * @returns {{facets: Record<string, number | Record<string, number>>, scalars: {name: string, min: number, max: number, average: number}[]}}
      */
-    getAggregations(facets = []) {
-        const facetLookup = new Lookup(this.queries.facets.all.values())
+    getAggregations(filters = []) {
+        const { getByLength, getByFacets } = this.queries.aggregations
+        const lookup = new Lookup(this.queries.terms.all.values())
         const aggregations = {}
 
         const setAggregation = (key, value, count) => {
@@ -262,15 +261,12 @@ export default class FacetedSearch {
             aggregations[key][value] = count
         }
 
-        const possiblePermutations =
-            this.queries.facets.aggregations.getByLength.values(
-                (facets.length + 1) * 2
-            )
-        const required = facets.map(name => {
-            const id = facetLookup.getID(name)
-            if (id === undefined) throw new Error(`Facet "${name}" not found.`)
-            return id
-        })
+        const possiblePermutations = getByLength.values(
+            (filters.length + 1) * 2
+        )
+        const required = filters
+            .map(name => lookup.getID(name))
+            .sort((a, b) => a - b)
 
         possiblePermutations.forEach(([{ buffer }, count]) => {
             const permutationIDs = new Uint16Array(buffer)
@@ -282,17 +278,21 @@ export default class FacetedSearch {
             const nextFacetID = permutationIDs.find(
                 id => !required.includes(id)
             )
-            const [key, value] = facetLookup.getName(nextFacetID).split(':')
+            const [key, value] = lookup.getName(nextFacetID).split(':')
             setAggregation(key, value, count)
         })
 
+        const sort_by = Object.fromEntries(
+            getByFacets
+                .all(this.getFacetBuffer(required))
+                .map(({ scalar, min, max, avg }) => {
+                    return [lookup.getName(scalar), { min, max, avg }]
+                })
+        )
+
         return {
-            facets: aggregations,
-            scalars: required.length
-                ? this.queries.scalars.aggregations.getByFacets.all(
-                      this.getBuffer(required)
-                  )
-                : this.queries.scalars.aggregations.getUnfiltered.all()
+            filters: aggregations,
+            sort_by
         }
     }
 }

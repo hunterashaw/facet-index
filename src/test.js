@@ -1,6 +1,6 @@
-import FacetedSearch from './search'
+import DocumentStore from './search'
 
-const search = new FacetedSearch('store.db')
+const search = new DocumentStore('store.db')
 
 /**
  * Create sample documents
@@ -68,47 +68,13 @@ function populate(count) {
         } seconds`
     )
 
+    console.log('Building aggregations')
     search.buildAggregations()
+    console.log('Vacuuming')
     search.vacuum()
+    console.log('Done')
 }
-
-const getResults = parameters => {
-    const start = performance.now()
-    const results = search.getResults(parameters)
-    console.log('getResults took:', Math.floor(performance.now() - start), 'ms')
-    return results
-}
-
-const getAggregations = parameters => {
-    const start = performance.now()
-    const results = search.getAggregations(parameters.facets)
-    console.log(
-        'getAggregations took:',
-        Math.floor(performance.now() - start),
-        'ms'
-    )
-    return results
-}
-
-const parameters = {
-    sort_by: 'price'
-}
-
-const facetSets = [
-    ['material:wood'],
-    ['material:steel'],
-    ['material:wood'],
-    ['color:black'],
-    ['name:fast'],
-    ['name:oval'],
-    ['color:toupe']
-]
-const random = array => array[Math.floor(Math.random() * array.length)]
-
-// for (let i = 0; i < 10; i++) {
-//     const facets = random(facetSets)
-//     getAggregations({ ...parameters, facets })
-//     getResults({ ...parameters, facets })
-// }
 
 populate(100000)
+
+search.close()

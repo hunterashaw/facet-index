@@ -1,18 +1,13 @@
-# SQLite Faceted Search
+# SQLite-Backed Faceted-Document Store
 
-This is an implementation of [faceted search](https://en.wikipedia.org/wiki/Faceted_search) using [SQLite3](https://www.sqlite.org/index.html) and the [bun](https://bun.sh/) javascript runtime.
+This is a faceted document store that can be used to power [faceted search](https://en.wikipedia.org/wiki/Faceted_search) or other listings that require fast (<10ms) response times.
 
-## Goal
-A lightweight but powerful faceted-search tool (like those used in eCommerce) that can power rich search results pages.
+It is designed be a lightweight replacement for [Elasticsearch](https://www.elastic.co/) in these use cases.
+
+It uses [SQLite3](https://www.sqlite.org/index.html) and the [bun](https://bun.sh/) javascript runtime.
 
 ## Features
- - ~20ms response times (on 1 million documents)
- - Facet aggregations
- - Scalable - tested with 1 million documents
- - Durable - [SQLite3 is ACID compliant](https://www.sqlite.org/transactional.html)
- - Efficient - Uses orders of magnitude less memory & CPU during indexing & querying (compared to [Elasticsearch](https://www.elastic.co/))
- - Dynamic indexing
+ - Single-digit millisecond response times
+ - Provides aggregations (count, min, max, average) and query permutations
+ - Lightweight - Uses orders of magnitude less memory & CPU than [Elasticsearch](https://www.elastic.co/)
 
-## WIP
-Left to finish:
- - Sort after

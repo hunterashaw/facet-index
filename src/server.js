@@ -1,6 +1,6 @@
-import FacetedSearch from './search'
+import DocumentStore from './search'
 
-const index = new FacetedSearch('store.db')
+const index = new DocumentStore('store.db')
 
 const endpoints = {
     /**
@@ -10,7 +10,7 @@ const endpoints = {
         try {
             const start = performance.now()
             const results = index.getResults(request.body)
-            const aggregations = index.getAggregations(request.body?.facets)
+            const aggregations = index.getAggregations(request.body?.filters)
             const took = Math.floor(performance.now() - start)
             return new Response(JSON.stringify({
                 results,
@@ -26,15 +26,6 @@ const endpoints = {
             console.error(e)
             return new Response(e.message, {status: 400})
         }
-    },
-    'POST/maintain': () => {
-        console.log('Maintenance started.')
-        const start = performance.now()
-        index.buildAggregations()
-        index.vacuum()
-        const took = Math.floor((performance.now() - start) / 1000)
-        console.log(`Maintenance finished. Took: ${took} seconds.`)
-        return new Response(`Maintenance finished. Took: ${took} seconds.`)
     }
 }
 
