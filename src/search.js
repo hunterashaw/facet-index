@@ -57,6 +57,15 @@ export default class DocumentStore {
     }
 
     /**
+     * Build term suggestions - run after indexing new terms
+     */
+    buildSuggestions() {
+        this.queries.terms.all.values().forEach(([id, name]) => {
+            
+        })
+    }
+
+    /**
      * Get or create term ID by name
      * @param {string} name
      * @param {boolean} readonly Throw error if term is not found
@@ -70,6 +79,14 @@ export default class DocumentStore {
         const id = get.get(name)?.rowid
         if (id === undefined) throw new Error(`Term '${name}' not found.`)
         return id
+    }
+
+    /**
+     * Get term lookup to map term names <-> IDs
+     * @returns {Lookup}
+     */
+    getTermLookup() {
+        return new Lookup(this.queries.terms.all.values())
     }
 
     /**
@@ -250,7 +267,7 @@ export default class DocumentStore {
      */
     getAggregations(filters = []) {
         const { getByLength, getByFacets } = this.queries.aggregations
-        const lookup = new Lookup(this.queries.terms.all.values())
+        const lookup = this.getTermLookup()
         const aggregations = {}
 
         const setAggregation = (key, value, count) => {

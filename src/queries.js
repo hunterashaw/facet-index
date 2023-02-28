@@ -1,17 +1,20 @@
 export const schema = {
     drops: [
         'drop table if exists terms',
+        'drop table if exists term_permutations',
         'drop table if exists aggregations',
         'drop table if exists documents',
         'drop table if exists results'
     ],
     tables: [
         'create table if not exists terms (name text unique)',
+        'create table if not exists term_permutations (value text, term integer)',
         'create table if not exists aggregations (facets blob, scalar integer, count integer, min real, max real, avg real)',
         'create table if not exists documents (value text)',
         'create table if not exists results (document integer, aggregation integer, value real)'
     ],
     indexes: [
+        'create unique index if not exists term_permutations (value, term)',
         'create unique index if not exists aggregations_unique on aggregations (facets, scalar)',
         'create index if not exists results_sort on results (aggregation, value, document)',
         'create index if not exists results_document on results (document)'
@@ -32,6 +35,9 @@ export function getQueries(db) {
             create: prepare(
                 'insert into terms (name) values (?) returning rowid'
             )
+        },
+        term_permutations: {
+            create: prepare('insert into term_permutations (value, term) values (?, ?) on conflict (value, term) do nothing')
         },
         aggregations: {
             get: prepare('select rowid from aggregations where facets = ? and scalar = ?'),
